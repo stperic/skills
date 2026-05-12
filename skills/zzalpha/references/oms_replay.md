@@ -10,7 +10,7 @@ DELETE /v1/admin/as-of-date  (clear)
 GET  /v1/admin/as-of-date
 ```
 
-Auth: Admin Key or As-Of Key for set/clear; API Key also accepted for GET.
+Auth: replay process only (`:8081`). Set/clear require `ALPHA_REPLAY_KEY`; GET also accepts `ALPHA_API_KEY`. The route group is **not registered** on the live process — calls to `:8080/v1/admin/as-of-date` return `404`.
 
 ## Determinism contract
 
@@ -64,6 +64,17 @@ Reads other than as-of-date are not role-gated and work on either port.
 - Trading writes: route by `account_key`. `paper` / `schwab-sim` (anything in `LIVE_ACCOUNT_KEYS`) → `:8080`. Other accounts → `:8081`. `replay-day` / `simulate-outcome` follow the same account rule.
 - As-of-date set/clear/read: `:8081` only. `:8080` returns 404.
 - Reads (health, market data, account summary, positions list) work on either port; prefer the port matching the workload to avoid mixing.
+
+### Schema ownership and the `schema_version` contract
+
+Only the live process migrates the OMS schema. Replay is a strict consumer — if it ever ran migration, both processes would race on DDL and one would deadlock. The contract has four parts:
+
+1. `oms.CurrentSchemaVersion` — Go constant compiled into the binary; bumped any time `oms_schema.sql` changes shape in a way readers must see before issuing queries.
+2. `schema_version` table — single row (CHECK id=1) holding `(version, applied_at, applied_by)`. Lives at the end of `oms_schema.sql`.
+3. `oms.Migrate` — runs inside a pgx tx with `pg_advisory_xact_lock(migrationLockKey)` at the top. The schema apply, version stamp, and account seeds all commit together or roll back together. Postgres supports transactional DDL, so there is no half-migrated state.
+4. `oms.VerifySchemaVersion` — replay calls this at startup (fail-fast if mismatch) and `/v1/trading/health` calls it continuously (503 with `schema_version: "mismatch: ..."` on skew). Live built from commit N+1 against the same DB as replay still on commit N is detected loudly, not silently.
+
+The advisory lock is cheap insurance against a future operator running an out-of-process `migrate` command against a running live; today there is one migrator, but the structural guarantee outlives any single-owner assumption.
 
 ### Deployment
 

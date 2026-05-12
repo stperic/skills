@@ -7,10 +7,10 @@ All passed via `Authorization: Bearer <key>` on the HTTP API; MCP clients send t
 | Key | Env Var | Access |
 |-----|---------|--------|
 | **API Key** | `ALPHA_API_KEY` | All read-only `/v1/*` routes + as-of-date GET |
-| **Admin Key** | `ALPHA_ADMIN_KEY` | All mutations: symbol tracking, batch track/untrack, job cancel/retry, rates fetch/backfill, analytics enable/disable, sync trigger, provider switch, as-of-date set/clear |
-| **As-Of Key** | `ALPHA_AS_OF_KEY` | As-of-date GET/set/clear only |
+| **Live Mutation Key** | `ALPHA_LIVE_KEY` | Every mutation on the live process (`:8080`): symbols, sync, jobs, rates, analytics, provider switch, trading writes against `paper`/`schwab-sim`. Required in production for the live role. |
+| **Replay Mutation Key** | `ALPHA_REPLAY_KEY` | Every mutation on the replay process (`:8081`): `as-of-date` set/clear, trading writes against replay accounts, `replay-day`, `simulate-outcome`. Required in production for the replay role. |
 
-**All mutation endpoints require the Admin Key.** Read-only GETs accept the API Key or no auth depending on `REQUIRE_AUTH` config.
+**Mutation auth is process-scoped:** the live process accepts only `ALPHA_LIVE_KEY` for writes, replay accepts only `ALPHA_REPLAY_KEY`. There is no shared admin key. Read-only GETs accept `ALPHA_API_KEY` or no auth depending on `REQUIRE_AUTH`.
 
 ## MCP client key forwarding
 
@@ -103,9 +103,9 @@ make test-unit
 ## As-of-date administration
 
 ```
-POST   /v1/admin/as-of-date   { "date": "2026-02-14" }   ← set (Admin or As-Of key)
-DELETE /v1/admin/as-of-date                              ← clear (Admin or As-Of key)
-GET    /v1/admin/as-of-date                              ← read (any key)
+POST   /v1/admin/as-of-date   { "date": "2026-02-14" }   ← set    (Replay Mutation Key)
+DELETE /v1/admin/as-of-date                              ← clear  (Replay Mutation Key)
+GET    /v1/admin/as-of-date                              ← read   (Replay Mutation Key or API Key)
 ```
 
 See `oms_replay.md` for the replay determinism invariants that `asOfBoundary` enforces.

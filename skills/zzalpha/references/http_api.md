@@ -22,15 +22,16 @@ External clients access data through these paths:
 
 ## Authentication
 
-Three API key tiers, all passed via `Authorization: Bearer <key>` header:
+Process-scoped mutation key plus optional read/OMS tiers, all passed via `X-API-Key` (or `Authorization: Bearer`):
 
-| Key | Env Var | Access |
-|-----|---------|--------|
-| **API Key** | `ALPHA_API_KEY` | All read-only `/v1/*` routes + as-of-date GET |
-| **Admin Key** | `ALPHA_ADMIN_KEY` | All mutations: symbol tracking, batch track/untrack, job cancel/retry, rates fetch/backfill, analytics enable/disable, sync trigger, provider switch, as-of-date set/clear |
-| **As-Of Key** | `ALPHA_AS_OF_KEY` | As-of-date GET/set/clear only |
+| Key | Env Var | Where set | Gates |
+|---|---|---|---|
+| **Live Mutation Key** | `ALPHA_LIVE_KEY` | live process only | every mutation on `:8080` (symbols, sync jobs, rates, trading writes against live accounts, …) |
+| **Replay Mutation Key** | `ALPHA_REPLAY_KEY` | replay process only | every mutation on `:8081` (`as-of-date` set/clear, trading writes against replay accounts, simulate, replay-day, …) |
+| **OMS Key** | `ALPHA_OMS_KEY` | both | Schwab live trading (real-money gate, kept distinct from the mutation key) |
+| **API Key** | `ALPHA_API_KEY` | both | read-only `/v1/*` routes; optional (empty = unauthenticated reads allowed) |
 
-**All mutation endpoints require the Admin Key.** Read-only endpoints (GET) are accessible with the API Key or no auth depending on `REQUIRE_AUTH` config.
+**Pick the mutation key by process, not by endpoint.** Live writes go to `:8080` and use `ALPHA_LIVE_KEY`; replay writes go to `:8081` and use `ALPHA_REPLAY_KEY`. A wrong-key call returns `401`; a right-key call to the wrong port returns either `400 WRONG_ROLE` (route exists, account_key in wrong domain) or `404` (route physically absent — only as-of-date hits this path).
 
 ### Route auth summary
 
@@ -40,13 +41,13 @@ Three API key tiers, all passed via `Authorization: Bearer <key>` header:
 | `GET /v1/market/*`, `GET /v1/context/*`, `GET /v1/search/*`, `GET /v1/alpha/*`, `GET /v1/proxy/*` | API Key (or public) | GET |
 | `GET /v1/stream/*`, `GET /v1/trading/*` | API Key (or public) | GET |
 | `GET /v1/schema`, `POST /v1/query` | API Key (or public) | GET, POST |
-| `POST/DELETE /v1/symbols/*`, `POST/DELETE /v1/track/batch` | **Admin Key** | POST, PUT, DELETE |
-| `POST/DELETE /v1/jobs/*` | **Admin Key** | DELETE, POST |
-| `POST /v1/rates/*`, `POST/DELETE /v1/alpha/enable|disable` | **Admin Key** | POST, DELETE |
-| `GET/POST /v1/admin/sync/*`, `GET/POST /v1/admin/provider-periods/*` | **Admin Key** | all |
-| `POST/DELETE /v1/admin/as-of-date` (replay process only — `:8081`) | **Admin Key** or **As-Of Key** | POST, DELETE |
-| `GET /v1/admin/as-of-date` (replay process only — `:8081`) | **Admin Key**, **As-Of Key**, or **API Key** | GET |
-| `POST /v1/trading/orders`, `POST /v1/trading/spreads`, etc. | API Key (or public) | POST |
+| `POST/DELETE /v1/symbols/*`, `POST/DELETE /v1/track/batch` | **Live Mutation Key** (`:8080`) | POST, PUT, DELETE |
+| `POST/DELETE /v1/jobs/*` | **Live Mutation Key** (`:8080`) | DELETE, POST |
+| `POST /v1/rates/*`, `POST/DELETE /v1/alpha/enable|disable` | **Live Mutation Key** (`:8080`) | POST, DELETE |
+| `GET/POST /v1/admin/sync/*`, `GET/POST /v1/admin/provider-periods/*` | **Live Mutation Key** (`:8080`) | all |
+| `POST/DELETE /v1/admin/as-of-date` (replay process only — `:8081`) | **Replay Mutation Key** | POST, DELETE |
+| `GET /v1/admin/as-of-date` (replay process only — `:8081`) | **Replay Mutation Key** or **API Key** | GET |
+| `POST /v1/trading/orders`, `POST /v1/trading/spreads`, etc. | Role's mutation key (route by `account_key`) | POST |
 
 ---
 
@@ -1229,14 +1230,14 @@ data: {"type":"greeks","symbol":".AAPL250321C00185000","timestamp":"2026-02-14T1
 
 ---
 
-## 5. Symbol Tracking & Management (Admin Key Required)
+## 5. Symbol Tracking & Management (Live Mutation Key Required)
 
-All mutation endpoints in this section require the **Admin Key**. Read-only endpoints (GET) are public.
+All mutation endpoints in this section live on `:8080` only and require the **Live Mutation Key** (`ALPHA_LIVE_KEY`). Read-only endpoints (GET) are public.
 
 ### Add Symbol
 
 ```
-POST /v1/symbols                          # Admin Key required
+POST /v1/symbols                          # Live Mutation Key required
 ```
 
 ```json
@@ -1296,7 +1297,7 @@ GET /v1/symbols/status                    # Public — data status across all sy
 ### Delete Symbol
 
 ```
-DELETE /v1/symbols/:symbol                # Admin Key required
+DELETE /v1/symbols/:symbol                # Live Mutation Key required
 ```
 
 ```bash
@@ -1361,8 +1362,8 @@ Metric status values:
 ### Batch Track / Untrack
 
 ```
-POST   /v1/track/batch                    # Admin Key required
-DELETE /v1/track/batch                    # Admin Key required
+POST   /v1/track/batch                    # Live Mutation Key required
+DELETE /v1/track/batch                    # Live Mutation Key required
 ```
 
 **Batch track body:**
@@ -1405,8 +1406,8 @@ Per-symbol `status` values: `accepted` (new, jobs started), `already_tracked`, o
 ### Analytics Enable / Disable
 
 ```
-POST   /v1/alpha/enable                   # Admin Key required
-DELETE /v1/alpha/disable/:symbol          # Admin Key required
+POST   /v1/alpha/enable                   # Live Mutation Key required
+DELETE /v1/alpha/disable/:symbol          # Live Mutation Key required
 GET    /v1/alpha/status                   # Public
 ```
 
@@ -1440,9 +1441,9 @@ Restrictions: Only `SELECT` and `WITH` (CTE) statements. Max 10,000 rows.
 
 ---
 
-## 7. Admin Endpoints (Admin Key Required)
+## 7. Admin Endpoints (Live Mutation Key Required — :8080)
 
-All endpoints in this section require the **Admin Key**.
+All endpoints in this section run on `:8080` only and require the **Live Mutation Key** (`ALPHA_LIVE_KEY`).
 
 ### Data Sync
 
@@ -1548,9 +1549,9 @@ POST /v1/rates/backfill                    # Backfill historical rates
 Simulates a specific point-in-time for all market data queries. Useful for backtesting and replay.
 
 ```
-POST   /v1/admin/as-of-date                 # Admin Key or As-Of Key
-GET    /v1/admin/as-of-date                 # Admin Key, As-Of Key, or API Key
-DELETE /v1/admin/as-of-date                 # Admin Key or As-Of Key
+POST   /v1/admin/as-of-date                 # Replay Mutation Key — :8081 only
+GET    /v1/admin/as-of-date                 # Replay Mutation Key or API Key — :8081 only
+DELETE /v1/admin/as-of-date                 # Replay Mutation Key — :8081 only
 ```
 
 **Set body:** `{"end": "2026-01-15"}` — YYYY-MM-DD or RFC3339 timestamp. All subsequent queries act as if the current date is the specified date.

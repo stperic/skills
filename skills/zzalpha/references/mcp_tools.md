@@ -1723,13 +1723,13 @@ Returns 404 if no sync has ever run. Poll this after `trigger_sync` to monitor c
 
 As-of mode defines a **boundary date** for deterministic historical replay. The agent must always provide `as_of` on every request — the server rejects requests without it (400) and rejects `as_of` values after the boundary (400). `start` or `end` after the boundary also returns 400. All responses include an `X-As-Of-Boundary` header. There are no MCP tools for as-of mode — it is controlled exclusively via admin HTTP endpoints.
 
-**Authentication:** Requires `ALPHA_AS_OF_KEY` or `ALPHA_ADMIN_KEY`. The `GET` endpoint also accepts `ALPHA_API_KEY` (the MCP server polls it to sync state).
+**Authentication:** As-of-date routes live on the replay process only (`:8081`). Set/clear require `ALPHA_REPLAY_KEY`; the `GET` endpoint also accepts `ALPHA_API_KEY` (the MCP server polls it to sync state). Calls to `:8080/v1/admin/as-of-date` return `404` — the route group is not registered on the live process.
 
 #### `POST /v1/admin/as-of-date` — Enable as-of mode
 
 ```bash
-curl -X POST http://localhost:8080/v1/admin/as-of-date \
-  -H "X-API-Key: $ALPHA_AS_OF_KEY" \
+curl -X POST http://10.1.5.30:8081/v1/admin/as-of-date \
+  -H "X-API-Key: $ALPHA_REPLAY_KEY" \
   -H "Content-Type: application/json" \
   -d '{"end": "2025-06-15"}'
 ```
@@ -1745,7 +1745,7 @@ Body: `{"end": "2025-06-15"}` (YYYY-MM-DD → ET midnight) or `{"end": "2025-06-
 #### `GET /v1/admin/as-of-date` — Query as of state
 
 ```bash
-curl http://localhost:8080/v1/admin/as-of-date -H "X-API-Key: $ALPHA_API_KEY"
+curl http://10.1.5.30:8081/v1/admin/as-of-date -H "X-API-Key: $ALPHA_API_KEY"
 ```
 
 **Returns (200):**
@@ -1759,7 +1759,7 @@ Or when inactive: `{"enabled": false}`
 #### `DELETE /v1/admin/as-of-date` — Disable as-of mode
 
 ```bash
-curl -X DELETE http://localhost:8080/v1/admin/as-of-date -H "X-API-Key: $ALPHA_AS_OF_KEY"
+curl -X DELETE http://10.1.5.30:8081/v1/admin/as-of-date -H "X-API-Key: $ALPHA_REPLAY_KEY"
 ```
 
 **Returns (200):** `{"enabled": false}`
