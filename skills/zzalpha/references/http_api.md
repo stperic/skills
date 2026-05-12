@@ -52,20 +52,29 @@ Three API key tiers, all passed via `Authorization: Bearer <key>` header:
 
 ## Role routing (two-process deployment)
 
-AlphaDB runs as **two processes** on the same host (see `architecture.md` and `oms_replay.md`):
+AlphaDB runs as **two processes** on the same host (see `architecture.md` and `oms_replay.md`). The role guard gates writes by **`account_key`**, not by endpoint — every write endpoint (`place_order`, `place_spread`, `close_spread`, `adjust_cash`, `roll_position`, …) exists on both ports.
 
-| Port | Role | Owns writes to |
+| Port | Role | Writes allowed for accounts |
 |---|---|---|
-| `:8080` | `live` | `paper`, `schwab-sim` (everything in `ALPHADB_LIVE_ACCOUNT_KEYS`) |
-| `:8081` | `replay` | every other account (replay/sim) |
+| `:8080` | `live` | listed in `ALPHADB_LIVE_ACCOUNT_KEYS` (typically `paper`, `schwab-sim`) |
+| `:8081` | `replay` | every other account (replay/sim, e.g. `alphaseeker-sim`) |
 
-**Replay-only endpoints** (must use `:8081`, return `400 WRONG_ROLE` on `:8080`):
+**Routing rule:** pick the port by the `account_key` in the request. Sending a write for a non-matching account returns `400 WRONG_ROLE` naming the account and the role that owns it.
+
+```
+POST /v1/trading/orders         {account_key: "paper", ...}            → :8080  ✓
+POST /v1/trading/orders         {account_key: "paper", ...}            → :8081  ✗ WRONG_ROLE
+POST /v1/trading/orders         {account_key: "alphaseeker-sim", ...}  → :8081  ✓
+POST /v1/trading/spreads        {account_key: "schwab-sim", ...}       → :8080  ✓
+POST /v1/trading/close          {account_key: "alphaseeker-sim", ...}  → :8081  ✓
+```
+
+**Replay-time-machine endpoints** are role-pinned to `replay` regardless of account:
 - `POST /v1/trading/accounts/:key/replay-day`
 - `POST /v1/trading/accounts/:key/simulate-outcome`
 - `POST /v1/admin/as-of-date` and `DELETE /v1/admin/as-of-date`
 
-**Live-only writes** (must use `:8080`, return `400 WRONG_ROLE` on `:8081`):
-- `POST /v1/trading/orders`, `POST /v1/trading/spreads`, `POST /v1/trading/close`, … against `paper` or `schwab-sim`.
+These set the global `asOfBoundary`, which is the whole reason the replay process exists; they must go to `:8081`.
 
 Reads (GET) are not role-gated and work on either port; prefer the port matching the workload to avoid mixing.
 

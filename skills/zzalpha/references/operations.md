@@ -75,10 +75,12 @@ make lxc-replay    # build + cycle replay only
 
 **Bootstrap a fresh LXC:** `scripts/setup-lxc.sh` (run as root once) writes the env files, installs both systemd units, removes any legacy `alphaserver.service`, and starts both processes.
 
-**Client routing:**
-- Replay-only endpoints (`POST /v1/trading/replay-day`, `POST /v1/trading/simulate-outcome`, `POST/DELETE /v1/admin/as-of-date`) → `:8081`. They return `400 WRONG_ROLE` on `:8080`.
-- Live writes to `paper` / `schwab-sim` (`place_order`, `place_spread`, `close_spread`, …) → `:8080`. `WRONG_ROLE` on `:8081`.
-- Reads work on either port. Prefer the port matching the workload.
+**Client routing:** the role guard gates writes by `account_key`, not by endpoint. Every write endpoint exists on both ports — pick by account.
+
+- Writes for accounts in `ALPHADB_LIVE_ACCOUNT_KEYS` (`paper`, `schwab-sim`) → `:8080`. `WRONG_ROLE` on `:8081`.
+- Writes for replay/sim accounts (everything else, e.g. `alphaseeker-sim`) → `:8081`. `WRONG_ROLE` on `:8080`.
+- Replay time-machine endpoints (`replay-day`, `simulate-outcome`, `as-of-date` set/clear) are role-pinned to `replay` and must use `:8081` regardless of account.
+- Reads (GET) work on either port. Prefer the port matching the workload.
 
 **Failure mode to watch:** if `WRONG_ROLE` appears in client logs, the client routed a write to the wrong port — the error body names the account and the role that owns it.
 
