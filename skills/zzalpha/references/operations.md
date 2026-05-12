@@ -77,12 +77,14 @@ make lxc-replay    # build + cycle replay only
 
 **Client routing:** the role guard gates writes by `account_key`, not by endpoint. Every write endpoint exists on both ports — pick by account.
 
-- Writes for accounts in `ALPHADB_LIVE_ACCOUNT_KEYS` (`paper`, `schwab-sim`) → `:8080`. `WRONG_ROLE` on `:8081`.
-- Writes for replay/sim accounts (everything else, e.g. `alphaseeker-sim`) → `:8081`. `WRONG_ROLE` on `:8080`.
-- Replay time-machine endpoints (`replay-day`, `simulate-outcome`, `as-of-date` set/clear) are role-pinned to `replay` and must use `:8081` regardless of account.
-- Reads (GET) work on either port. Prefer the port matching the workload.
+- Trading writes (`place_order`, `place_spread`, `close_spread`, `replay-day`, `simulate-outcome`, …) for accounts in `ALPHADB_LIVE_ACCOUNT_KEYS` (`paper`, `schwab-sim`) → `:8080`. `400 WRONG_ROLE` on `:8081`.
+- Trading writes for replay/sim accounts (everything else, e.g. `alphaseeker-sim`) → `:8081`. `400 WRONG_ROLE` on `:8080`.
+- `/v1/admin/as-of-date` (GET/POST/DELETE) — replay process only. Route is **not registered** on `:8080`; calls return plain `404`, not `400 WRONG_ROLE`. This is intentional: no account_key to gate by, and "route absent" is harder to undo than middleware.
+- Reads other than as-of-date work on either port. Prefer the port matching the workload.
 
-**Failure mode to watch:** if `WRONG_ROLE` appears in client logs, the client routed a write to the wrong port — the error body names the account and the role that owns it.
+**Failure modes to watch:**
+- `400 WRONG_ROLE` in client logs → trading write routed to the wrong port; the error body names the account and the role that owns it.
+- `404` on a `/v1/admin/as-of-date` call → client hit `:8080` for an as-of operation; retry on `:8081`.
 
 ## Local test environment
 

@@ -105,7 +105,7 @@ A single `alphaserver` binary runs as **two systemd units** sharing one OMS DB. 
 - `alphaserver-live` (`:8080`, `ALPHADB_ROLE=live`) — owns writes to `ALPHADB_LIVE_ACCOUNT_KEYS` (typically `paper,schwab-sim`), runs all background loops (auto-exit, loss monitor, watchdog, nightly scheduler, reconciliation).
 - `alphaserver-replay` (`:8081`, `ALPHADB_ROLE=replay`) — owns writes to every other account (replay/sim), sets per-request `asOfBoundary` via `/v1/admin/as-of-date`, **no background loops**.
 
-Writes to the wrong role return `400 WRONG_ROLE`. The replay process never sees background loop ticks, so the `asOfBoundary` it sets cannot bleed into live work. See `oms_replay.md` for the full invariant + routing summary.
+Trading writes to the wrong-role account return `400 WRONG_ROLE` (service-layer `AllowAccount` check). The `as-of-date` route group is gated by `cfg.Role == "replay"` at route registration time, so calls to `:8080` return `404` (route absent, no handler) rather than 400 — a stronger guarantee than middleware. The replay process never sees background loop ticks, so the `asOfBoundary` it sets cannot bleed into live work. See `oms_replay.md` for the full invariant + routing summary.
 
 ## OMS repository pattern
 

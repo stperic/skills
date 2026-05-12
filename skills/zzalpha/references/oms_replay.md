@@ -53,11 +53,16 @@ All 12 OMS services accept `WithRoleGuard`. Every write method (`PlaceOrder`, `P
 
 ### HTTP edge
 
-Writes to the wrong role return **`400 WRONG_ROLE`** with the account key and the role that owns it. Reads are not role-gated.
+Two different rejection mechanisms, by design:
+
+- **Trading writes** (`place_order`, `place_spread`, `close_spread`, roll, cancel, adjust-cash, reconcile, replay-day, simulate-outcome, …) exist on both ports. The service-layer `g.AllowAccount(key)` check returns `ErrAccountNotInRole`, translated by `internal/oms/http/handler.go` to **`400 WRONG_ROLE`** with the account key and the role that owns it.
+- **`/v1/admin/as-of-date`** (GET/POST/DELETE) is **physically absent** on the live process — `server.go` only registers the route group when `cfg.Role == "replay"`. Calls to `:8080` get a stock `404`, no handler invocation. This is deliberate: there is no account_key to gate by, and "404 because the route doesn't exist" is harder to undo in a refactor than a role-check middleware that someone could forget to wire.
+
+Reads other than as-of-date are not role-gated and work on either port.
 
 **Routing summary for clients:**
-- Replay-only: `POST /v1/trading/replay-day`, `POST /v1/trading/simulate-outcome`, `POST/DELETE /v1/admin/as-of-date` → `:8081`.
-- Live writes to `paper` / `schwab-sim`: `place_order`, `place_spread`, `close_spread`, … → `:8080`.
+- Trading writes: route by `account_key`. `paper` / `schwab-sim` (anything in `LIVE_ACCOUNT_KEYS`) → `:8080`. Other accounts → `:8081`. `replay-day` / `simulate-outcome` follow the same account rule.
+- As-of-date set/clear/read: `:8081` only. `:8080` returns 404.
 - Reads (health, market data, account summary, positions list) work on either port; prefer the port matching the workload to avoid mixing.
 
 ### Deployment

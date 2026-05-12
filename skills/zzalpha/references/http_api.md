@@ -44,8 +44,8 @@ Three API key tiers, all passed via `Authorization: Bearer <key>` header:
 | `POST/DELETE /v1/jobs/*` | **Admin Key** | DELETE, POST |
 | `POST /v1/rates/*`, `POST/DELETE /v1/alpha/enable|disable` | **Admin Key** | POST, DELETE |
 | `GET/POST /v1/admin/sync/*`, `GET/POST /v1/admin/provider-periods/*` | **Admin Key** | all |
-| `POST/DELETE /v1/admin/as-of-date` | **Admin Key** or **As-Of Key** | POST, DELETE |
-| `GET /v1/admin/as-of-date` | **Admin Key**, **As-Of Key**, or **API Key** | GET |
+| `POST/DELETE /v1/admin/as-of-date` (replay process only — `:8081`) | **Admin Key** or **As-Of Key** | POST, DELETE |
+| `GET /v1/admin/as-of-date` (replay process only — `:8081`) | **Admin Key**, **As-Of Key**, or **API Key** | GET |
 | `POST /v1/trading/orders`, `POST /v1/trading/spreads`, etc. | API Key (or public) | POST |
 
 ---
@@ -69,14 +69,11 @@ POST /v1/trading/spreads        {account_key: "schwab-sim", ...}       → :8080
 POST /v1/trading/close          {account_key: "alphaseeker-sim", ...}  → :8081  ✓
 ```
 
-**Replay-time-machine endpoints** are role-pinned to `replay` regardless of account:
-- `POST /v1/trading/accounts/:key/replay-day`
-- `POST /v1/trading/accounts/:key/simulate-outcome`
-- `POST /v1/admin/as-of-date` and `DELETE /v1/admin/as-of-date`
+**`replay-day` and `simulate-outcome`** exist on both ports but follow the same per-`account_key` rule — they only succeed for accounts in the process's role domain. Call them on the port that owns the account.
 
-These set the global `asOfBoundary`, which is the whole reason the replay process exists; they must go to `:8081`.
+**`/v1/admin/as-of-date`** (GET/POST/DELETE) is **physically absent on the live process** — the route group is only registered when `cfg.Role == "replay"`. Calls to `:8080` return `404`, not `400 WRONG_ROLE`. These set the process-global `asOfBoundary` and are the whole reason the replay process exists; route them to `:8081`.
 
-Reads (GET) are not role-gated and work on either port; prefer the port matching the workload to avoid mixing.
+Reads other than as-of-date are not role-gated and work on either port; prefer the port matching the workload to avoid mixing.
 
 ## Data Routing
 
