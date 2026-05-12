@@ -50,6 +50,25 @@ Three API key tiers, all passed via `Authorization: Bearer <key>` header:
 
 ---
 
+## Role routing (two-process deployment)
+
+AlphaDB runs as **two processes** on the same host (see `architecture.md` and `oms_replay.md`):
+
+| Port | Role | Owns writes to |
+|---|---|---|
+| `:8080` | `live` | `paper`, `schwab-sim` (everything in `ALPHADB_LIVE_ACCOUNT_KEYS`) |
+| `:8081` | `replay` | every other account (replay/sim) |
+
+**Replay-only endpoints** (must use `:8081`, return `400 WRONG_ROLE` on `:8080`):
+- `POST /v1/trading/accounts/:key/replay-day`
+- `POST /v1/trading/accounts/:key/simulate-outcome`
+- `POST /v1/admin/as-of-date` and `DELETE /v1/admin/as-of-date`
+
+**Live-only writes** (must use `:8080`, return `400 WRONG_ROLE` on `:8081`):
+- `POST /v1/trading/orders`, `POST /v1/trading/spreads`, `POST /v1/trading/close`, … against `paper` or `schwab-sim`.
+
+Reads (GET) are not role-gated and work on either port; prefer the port matching the workload to avoid mixing.
+
 ## Data Routing
 
 Data source is determined automatically by `as_of`:

@@ -32,9 +32,41 @@ Auto-exit, loss monitor, and other background loops must skip their ticks while 
 
 Lives in the doc comment above `SimulationService.ReplayDay`. Read it before touching the replay path. The three points above are the ones that break most often; the doc comment contains the long tail.
 
-## Global `asOfBoundary` isolation — open follow-up
+## Two-process role boundary (live + replay)
 
-The current `asOfBoundary` is a process-global. This works when the server runs replays serially, but a concurrent "replay + live" mixed mode would conflict. Tracked in project memory (`project_timezone_review_followups.md`).
+The `asOfBoundary` is a process-global. Rather than refactor every `timeutil.Now()` caller to take a per-request clock, AlphaDB runs **two `alphaserver` processes** on the same host sharing one OMS database. Isolation is by `account_key` at the service layer.
+
+| Process | Port | `ALPHADB_ROLE` | Allowed accounts (writes) | Background loops |
+|---|---|---|---|---|
+| `alphaserver-live` | `8080` | `live` | `ALPHADB_LIVE_ACCOUNT_KEYS` (typically `paper,schwab-sim`) | yes — auto-exit, loss monitor, watchdog, nightly scheduler, reconciliation |
+| `alphaserver-replay` | `8081` | `replay` | every account **not** in `LIVE_ACCOUNT_KEYS` (replay/sim accounts) | **no** — silent at startup |
+
+### Substrate
+
+- `internal/oms/domain/role.go` — `Role` enum (`RoleLive` / `RoleReplay`), `RoleGuard.AllowAccount` / `FilterAccounts` / `LiveAccountKeys`, `ErrAccountNotInRole` sentinel.
+- `internal/config/config.go` — `RoleConfig{Mode, LiveAccountKeys}`; `Validate` rejects unknown mode and empty list in live.
+- `internal/oms/module.go` — `oms.Config.Role *RoleGuard` is required at `New`; the module refuses to boot with a nil guard so production cannot accidentally default-allow.
+
+### Service-layer enforcement
+
+All 12 OMS services accept `WithRoleGuard`. Every write method (`PlaceOrder`, `PlaceSpread`, `CancelOrder/Spread`, `ClosePosition`, `ReplayDay`, `SimulateOutcome`, `ResolveExpirations/Splits`, `ReconcileAccount`, `AdjustCash`, `ResetAccount`, `RollPosition`, …) calls `g.AllowAccount(key)` before mutating. Background loops only attach when `Mode == "live"`.
+
+### HTTP edge
+
+Writes to the wrong role return **`400 WRONG_ROLE`** with the account key and the role that owns it. Reads are not role-gated.
+
+**Routing summary for clients:**
+- Replay-only: `POST /v1/trading/replay-day`, `POST /v1/trading/simulate-outcome`, `POST/DELETE /v1/admin/as-of-date` → `:8081`.
+- Live writes to `paper` / `schwab-sim`: `place_order`, `place_spread`, `close_spread`, … → `:8080`.
+- Reads (health, market data, account summary, positions list) work on either port; prefer the port matching the workload to avoid mixing.
+
+### Deployment
+
+`scripts/setup-lxc.sh` installs both systemd units (`alphaserver-live.service` + `alphaserver-replay.service`) and writes three env files: shared `/opt/alphadb/.env`, `live.env` (sets `ALPHADB_ROLE=live`, `ALPHADB_LIVE_ACCOUNT_KEYS`, `HTTP_PORT=8080`), and `replay.env` (`ALPHADB_ROLE=replay`, `HTTP_PORT=8081`). `make lxc` cycles both; `make lxc-live` / `make lxc-replay` cycle one side only.
+
+### What this does NOT solve
+
+A single process is still single-clock — running two concurrent replays in `alphaserver-replay` would conflict on `asOfBoundary`. The expected pattern is one replay session at a time per replay process. If concurrent replays become a requirement, the original per-context-clock refactor (deferred in two cold reviews as too invasive) is the real fix.
 
 ## Premature expiration resolution — open follow-up
 

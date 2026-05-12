@@ -50,6 +50,37 @@ The version tag reported in client handshake logs — `AlphaDB Server connected:
 - Prod LXC at `10.1.5.30`, prod DB on port `5432`, user `alphadb`.
 - SSH via `alpha-lxc` (config shortcut).
 - OMS data is in a **separate database** `alphadb_oms`, not `alphadb`. Always use `OMS_DB_URL`.
+- `OMS_DB_URL` must be **TCP** (`postgres://alphadb:alphadb@localhost:5432/alphadb_oms`) on the LXC, not the unix socket. `pg_hba.conf` has a per-database password-auth rule for `alphadb` over the socket but `alphadb_oms` falls through to peer auth and fails. If you see `Peer authentication failed for user "alphadb" (alphadb_oms)` in the boot log, the URL is using the socket form.
+
+## Two-process deployment (live + replay)
+
+Two systemd units share one host and one OMS DB, isolated by `account_key`:
+
+| Unit | Port | `ALPHADB_ROLE` | Env file |
+|---|---|---|---|
+| `alphaserver-live.service` | `8080` | `live` | `/opt/alphadb/.env` + `/opt/alphadb/live.env` |
+| `alphaserver-replay.service` | `8081` | `replay` | `/opt/alphadb/.env` + `/opt/alphadb/replay.env` |
+
+`live.env` sets `ALPHADB_ROLE=live`, `ALPHADB_LIVE_ACCOUNT_KEYS=paper,schwab-sim`, `HTTP_PORT=8080`. `replay.env` sets `ALPHADB_ROLE=replay`, `HTTP_PORT=8081`. Background loops + the nightly scheduler only attach when `ALPHADB_ROLE=live`.
+
+**Deploy from dev machine:**
+
+```bash
+make lxc           # build + cycle both processes
+make lxc-live      # build + cycle live only (replay keeps running its in-memory binary)
+make lxc-replay    # build + cycle replay only
+```
+
+`make lxc-live` / `make lxc-replay` leave the other side running its **previous** in-memory binary until that side is also cycled. The "Verifying a deployed binary" check applies independently to each process — `pgrep alphaserver` returns two pids.
+
+**Bootstrap a fresh LXC:** `scripts/setup-lxc.sh` (run as root once) writes the env files, installs both systemd units, removes any legacy `alphaserver.service`, and starts both processes.
+
+**Client routing:**
+- Replay-only endpoints (`POST /v1/trading/replay-day`, `POST /v1/trading/simulate-outcome`, `POST/DELETE /v1/admin/as-of-date`) → `:8081`. They return `400 WRONG_ROLE` on `:8080`.
+- Live writes to `paper` / `schwab-sim` (`place_order`, `place_spread`, `close_spread`, …) → `:8080`. `WRONG_ROLE` on `:8081`.
+- Reads work on either port. Prefer the port matching the workload.
+
+**Failure mode to watch:** if `WRONG_ROLE` appears in client logs, the client routed a write to the wrong port — the error body names the account and the role that owns it.
 
 ## Local test environment
 

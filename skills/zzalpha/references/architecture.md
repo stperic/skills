@@ -98,6 +98,15 @@ Services:
 
 Exit rules use a generic `ExitRule[C]` registry pattern — see `oms_exit_rules.md`.
 
+## Two-process deployment (live + replay)
+
+A single `alphaserver` binary runs as **two systemd units** sharing one OMS DB. Isolation is by `account_key` at the service layer through `RoleGuard` (`internal/oms/domain/role.go`):
+
+- `alphaserver-live` (`:8080`, `ALPHADB_ROLE=live`) — owns writes to `ALPHADB_LIVE_ACCOUNT_KEYS` (typically `paper,schwab-sim`), runs all background loops (auto-exit, loss monitor, watchdog, nightly scheduler, reconciliation).
+- `alphaserver-replay` (`:8081`, `ALPHADB_ROLE=replay`) — owns writes to every other account (replay/sim), sets per-request `asOfBoundary` via `/v1/admin/as-of-date`, **no background loops**.
+
+Writes to the wrong role return `400 WRONG_ROLE`. The replay process never sees background loop ticks, so the `asOfBoundary` it sets cannot bleed into live work. See `oms_replay.md` for the full invariant + routing summary.
+
 ## OMS repository pattern
 
 OMS repos (`internal/oms/repository/postgres/`) follow one shape to avoid the silent "cannot run inside a transaction" bugs that repeat when the shape drifts. Enforced by the `oms-split-pool-db` lint rule.
