@@ -86,6 +86,44 @@ make lxc-replay    # build + cycle replay only
 - `400 WRONG_ROLE` in client logs → trading write routed to the wrong port; the error body names the account and the role that owns it.
 - `404` on a `/v1/admin/as-of-date` call → client hit `:8080` for an as-of operation; retry on `:8081`.
 
+## Load-bearing env vars on the LXC
+
+These are not auth keys and not feature flags — they're config values that the nightly sync DAG **silently skips** when missing. Verified production-load-bearing by the 2026-05-13 incident.
+
+| Env var | Default | What breaks if absent |
+|---|---|---|
+| `OMS_DB_URL` | unset → OMS disabled | OMS module doesn't initialize, no `/v1/trading/*` routes mounted, no replay/simulate, no order placement. Use TCP form on the LXC (`postgres://alphadb:alphadb@localhost:5432/alphadb_oms`) — peer auth on the unix socket fails for `alphadb_oms`. |
+| `BULK_SYNC_STOCKS_1D_START_DATE` | unset → step skipped | `nightly_sync.bulkSyncStart` returns `time.Time{}` and the workflow drops `stocks_1d`. S3 download still runs, but flat files sit unused on disk. |
+| `BULK_SYNC_STOCKS_1M_START_DATE` | unset → step skipped | Same as above for stocks 1m. |
+| `BULK_SYNC_OPTIONS_1D_START_DATE` | unset → step skipped | Options 1d ingestion silently dropped. `iv_daily` computes against stale stocks because options bars never refresh. |
+| `BULK_SYNC_OPTIONS_1M_START_DATE` | unset → step skipped | Options 1m dropped. |
+| `BULK_SYNC_INDICES_START_DATE` | unset → step skipped | Indices ingestion dropped. |
+| `BULK_SYNC_RATES` | unset → step skipped | Treasury rates not refreshed; IV calculations get stale risk-free rate. |
+| `BULK_SYNC_FRED_START_DATE` | unset → step skipped | FRED macro indicators not refreshed. |
+| `SCHEDULER_DAILY_RUN_HOUR` / `_MINUTE` | code defaults to 06:00 | LXC `.env` overrides win. Production must use `6` / `0` (morning AFTER each session) to avoid racing Polygon S3 publication. Earlier values (e.g. 20:40 ET) hit `not_available` for the same-day flat files. |
+| `ALPHA_LIVE_KEY` / `ALPHA_REPLAY_KEY` | required in production | Process refuses to start (`Validate()` rejects). Role-scoped — only the key matching `ALPHADB_ROLE` is required on that process. |
+| `FLATFILE_PATH` | `""` → flat-file reader disabled | Polygon flat files won't be read even if downloaded. |
+| `FLATFILE_ENABLED` | `false` → flat-file path disabled | Same. |
+
+**Failure shape to recognize:** the sync runs, `s3_download` completes successfully, and the workflow shows `bulk_sync.completed = 4` (rates + fred + indices_1m + indices_1d) instead of `8` (those plus stocks_1m/1d + options_1m/1d). If you see `4`, check the `BULK_SYNC_STOCKS_*` / `BULK_SYNC_OPTIONS_*` env vars first. `sync_workflow_steps` for the run is the authoritative diagnostic:
+
+```sql
+SELECT kind, status, count(*) FROM sync_workflow_steps
+WHERE run_id = (SELECT MAX(id) FROM nightly_sync_runs)
+GROUP BY kind, status ORDER BY kind;
+```
+
+`sync_monitor`'s `stale_symbols > 0` does NOT mean ingestion is broken on its own — `dividends` and `earnings` rows are quarterly-cadence and their `last_synced_at` only bumps when fetch returns new rows, so most symbols stay "stale" by the 36h threshold without anything being wrong. Check the per-`data_type` breakdown before chasing it:
+
+```sql
+SELECT data_type, timeframe, COUNT(*) AS stale
+FROM sync_tracking
+WHERE last_synced_at < NOW() - INTERVAL '36 hours'
+GROUP BY data_type, timeframe ORDER BY data_type;
+```
+
+If `stocks` or `options` show non-trivial counts, ingestion is the issue. If only `earnings` / `dividends` / a handful of `sentiment` show, that's the cadence semantics — not a fire.
+
 ## Local test environment
 
 ```bash
