@@ -50,11 +50,17 @@ Rolling beta vs SPY (or a configurable benchmark) computed from daily log return
 
 Pairwise rolling correlation across a set of symbols. Used by the financial analyst agent to detect regime shifts and basket construction.
 
+## Mean reversion
+
+AR(1) half-life, Augmented Dickey-Fuller p-value (constant model, AIC-selected lag), and z-score on `log(close)` at `as_of`. Computed in `internal/stats` with gonum-backed OLS; ADF p-value interpolated from MacKinnon (1996) asymptotic τ_c surface, log-p interpolation in the left tail. Batch-native — up to 1000 symbols per call, no single-symbol mode. Used by AlphaSeeker's Phase B mean-reversion strategy gate (`half_life ∈ [1,30] AND adf_p_value < 0.01 AND |z_score| ≥ 2.0`).
+
+This endpoint is the canonical implementation; clients consume, they don't reimplement. See `architecture.md` "AlphaDB owns analytics, clients consume."
+
 ## Batch mode convention
 
 All single-symbol analytics tools accept comma-separated `symbols` for batch mode (up to 50). Failed symbols in a batch get `{"error": "..."}` entries instead of a data object — partial results don't fail the whole request.
 
-Batch-enabled tools: `iv_metrics`, `iv_term_structure`, `iv_rv_spread`, `skew`, `earnings_implied_move`, `sentiment`, `volatility`, `beta`.
+Batch-enabled tools: `iv_metrics`, `iv_term_structure`, `iv_rv_spread`, `skew`, `earnings_implied_move`, `sentiment`, `volatility`, `beta`. Batch-native (no single-symbol mode): `mean_reversion` (up to 1000 symbols).
 
 ## Data freshness gates
 

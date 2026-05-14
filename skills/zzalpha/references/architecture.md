@@ -5,6 +5,7 @@ AlphaDB is an MCP server that gives LLM trading agents a unified interface to ma
 ## Key principles
 
 - AlphaDB does NOT replicate upstream provider data. Polygon (Massive plan) and Alpha Vantage serve raw market data directly. The database stores only what AlphaDB computes itself or needs for computing insights.
+- **AlphaDB owns analytics, clients consume.** Anything derived from raw data — IV rank/percentile, beta, correlation, sentiment, half-life, ADF p-value, z-score — has exactly one canonical implementation, on the server. Clients (AlphaSeeker, etc.) MUST NOT reimplement these from `bars_1d` or any other raw feed. Two reasons: (1) replay determinism — bit-identical numeric output across runs depends on a single float-ordered code path, and (2) comparability — a client-side fallback that ships to production diverges from future server-side improvements and creates the v7-vs-v8 "did the number change because data moved or because code moved" debugging class. New analytics flow: client files a spec, AlphaDB implements and ships, client consumes. No client-side fallback that becomes permanent. See `analytics.md` for the canonical list of analytics endpoints.
 - **Ticker management is simplified.** Clients add/remove tickers for analytics tracking. AlphaDB decides internally what to collect based on `TypeDefaults` per ticker type.
 - **Long-term vision: Agentic Analytics.** LLM analysts create custom insight jobs at runtime. Future work, not current priority.
 

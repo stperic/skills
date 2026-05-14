@@ -44,7 +44,7 @@ Most analytics and composite tools return a `data`-wrapped envelope:
 
 Market data tools (`bars`, `quotes`, `options_chain`, `options_expirations`) return **flat responses** — fields at the top level, no `data` wrapper.
 
-**Batch mode (global convention):** All single-symbol analytics tools accept comma-separated `symbols` for batch mode (up to 50). A single symbol returns the normal flat response shape; multiple symbols return `{"data": {"SYM1": {...}, "SYM2": {...}}}` with per-symbol results (failed symbols get `{"error": "..."}` entries instead of their data object). Batch-enabled tools: `iv_metrics`, `iv_term_structure`, `iv_rv_spread`, `skew`, `earnings_implied_move`, `sentiment`, `volatility`, `beta`. `iv_metrics` batch is optimized with a single DB query across all requested symbols. See individual tool specs for exact response shapes.
+**Batch mode (global convention):** All single-symbol analytics tools accept comma-separated `symbols` for batch mode (up to 50). A single symbol returns the normal flat response shape; multiple symbols return `{"data": {"SYM1": {...}, "SYM2": {...}}}` with per-symbol results (failed symbols get `{"error": "..."}` entries instead of their data object). Batch-enabled tools: `iv_metrics`, `iv_term_structure`, `iv_rv_spread`, `skew`, `earnings_implied_move`, `sentiment`, `volatility`, `beta`. `iv_metrics` batch is optimized with a single DB query across all requested symbols. `mean_reversion` is batch-native (up to 1000 symbols, no single-symbol mode). See individual tool specs for exact response shapes.
 
 On error:
 
@@ -92,7 +92,7 @@ The server does NOT compute staleness — agents compare `as_of` vs current time
 
 Never skip fields silently. Always return the field as `null` so the agent's parsing logic is consistent. The `_missing` array tells the agent why and what to do about it.
 
-**Symbols:** Tools use either `symbol` (singular) or `symbols` (plural) — the parameter name indicates the response shape. Single-symbol tools (`symbol`) return a flat entity. Multi-symbol tools (`symbols`) return a keyed map `{"data": {"AAPL": {...}, "MSFT": {...}}}`. Analytics tools (§4.1–4.9) accept **both** — `symbol=AAPL` returns a flat entity, `symbols=AAPL,MSFT` returns a keyed map. All symbols are normalized to uppercase automatically.
+**Symbols:** Tools use either `symbol` (singular) or `symbols` (plural) — the parameter name indicates the response shape. Single-symbol tools (`symbol`) return a flat entity. Multi-symbol tools (`symbols`) return a keyed map `{"data": {"AAPL": {...}, "MSFT": {...}}}`. Analytics tools (§4.1–4.9) accept **both** — `symbol=AAPL` returns a flat entity, `symbols=AAPL,MSFT` returns a keyed map. §4.10 `mean_reversion` is batch-native (plural-only, up to 1000 symbols). All symbols are normalized to uppercase automatically.
 
 **Dates:** Accept `YYYY-MM-DD` strings. Default to sensible ranges when omitted (bars: 30 trading days, FRED: 90 days, earnings: 90 days forward).
 
@@ -608,7 +608,7 @@ Each observation: `date` and `value` only. Missing FRED data points (`"."`) excl
 
 These are insights AlphaDB computes from its own database. Most require the symbol to be tracked (see `track_symbols`). Proxy tools (bars, quotes, earnings, etc.) work for any symbol without analytics enabled.
 
-**HTTP endpoints:** Tools 4.1–4.9 dispatch through `GET /v1/alpha/analytics?metric={name}`. The analytics dispatcher accepts both `symbol` (single, flat response) and `symbols` (comma-separated up to 50, keyed map response `{"data": {"SYM1": {...}, "SYM2": {...}}}`). `symbols=AAPL` (single value via plural param) is normalized to a flat response. IV metrics batch uses a single optimized DB query. Exceptions: `portfolio_greeks` → `POST /v1/portfolio/greeks`, `scan_symbols` → `GET /v1/alpha/scan`, `earnings_calendar` → `GET /v1/alpha/analytics?metric=earnings_calendar`.
+**HTTP endpoints:** Tools 4.1–4.10 dispatch through `GET /v1/alpha/analytics?metric={name}`. The analytics dispatcher accepts both `symbol` (single, flat response) and `symbols` (comma-separated up to 50, keyed map response `{"data": {"SYM1": {...}, "SYM2": {...}}}`). `symbols=AAPL` (single value via plural param) is normalized to a flat response. IV metrics batch uses a single optimized DB query. `mean_reversion` is plural-only (up to 1000 symbols, batch fan-out internal to the service). Exceptions: `portfolio_greeks` → `POST /v1/portfolio/greeks`, `scan_symbols` → `GET /v1/alpha/scan`, `earnings_calendar` → `GET /v1/alpha/analytics?metric=earnings_calendar`.
 
 **Live vs DB:** During market hours, current-value fields (e.g. `current_iv`, `realized_vol`, volume) are replaced with live Polygon data; historical context (52-week IV history, baselines) stays DB-sourced. After close, pure DB reads. On live fetch failure, silently falls back to DB. All responses include `market_closed: bool` and `as_of` (data timestamp, not query time).
 
@@ -1028,7 +1028,42 @@ Pairwise correlation matrix between symbols.
 }
 ```
 
-### 4.10 `unusual_volume`
+### 4.10 `mean_reversion`
+
+Batch mean-reversion battery: AR(1) half-life, ADF p-value (constant model, AIC-selected lag), and z-score on `log(close)` for up to 1000 symbols at a point-in-time `as_of`.
+
+| Param | Type | Required | Default |
+|-------|------|----------|---------|
+| `symbols` | string | yes | comma-separated, up to 1000 |
+| `as_of` | string | no | today (ET) — `YYYY-MM-DD` |
+| `window` | number | no | 120 trading days (range 100-504) |
+
+**Returns:**
+
+```json
+{
+  "data": {
+    "AAPL": {"half_life_days": 8.34, "adf_p_value": 0.018, "z_score": -1.42, "fit_n_obs": 120, "data_quality": "ok"},
+    "MSFT": {"half_life_days": null, "adf_p_value": 0.51, "z_score": -0.18, "fit_n_obs": 120, "data_quality": "non_mean_reverting"},
+    "SPY":  {"half_life_days": null, "adf_p_value": null, "z_score": null, "fit_n_obs": 47, "data_quality": "insufficient_data"}
+  },
+  "as_of": "2026-02-14",
+  "window_days": 120,
+  "count": 3
+}
+```
+
+`data_quality` is `ok` | `insufficient_data` (fit_n_obs < 100 or any close ≤ 0) | `non_mean_reverting` (AR(1) β ≥ 0). Numeric fields are `null` when the corresponding estimator declined to produce a value; callers should treat `null` and `0` as distinct.
+
+**Stationary-trade gate:** `half_life_days ∈ [1, 30] AND adf_p_value < 0.01 AND |z_score| ≥ 2.0`.
+
+**Determinism:** two calls with the same `(symbols, as_of, window)` return bit-identical JSON bytes. Response symbols sorted alphabetically.
+
+**PIT:** any bar with `bar_date > as_of` is dropped before fitting. The service queries a wider calendar window than `window` trading days to absorb weekends/holidays, then takes the last `window` valid bars.
+
+**Architecture rule:** clients consume, don't reimplement. See `architecture.md` "AlphaDB owns analytics, clients consume."
+
+### 4.11 `unusual_volume`
 
 Institutional-grade volume anomaly detection with statistical guardrails.
 
@@ -1084,7 +1119,7 @@ OBV trend: `accumulating`, `distributing`, or `neutral`.
 
 **During market hours:** Today's volume is fetched from a live Polygon ticker snapshot (`Day.Volume`) instead of summing DB minute bars. The 30-day average baseline remains from DB.
 
-### 4.11 `portfolio_greeks`
+### 4.12 `portfolio_greeks`
 
 Aggregate portfolio Greeks with optional what-if scenario analysis.
 
@@ -1122,7 +1157,7 @@ Aggregate portfolio Greeks with optional what-if scenario analysis.
 
 `what_if_pnl` is only present when the `what_if` parameter is provided. It shows the new aggregate Greeks after adding the hypothetical position, plus the change from current values.
 
-### 4.12 `scan_symbols`
+### 4.13 `scan_symbols`
 
 Cross-symbol screener. Filters all tracked symbols by IV rank, days to earnings, RVOL, IV/RV ratio, and options liquidity. Returns matching symbols with their current analytics snapshot. **REST:** `GET /v1/alpha/scan`
 
@@ -1185,7 +1220,7 @@ scan_symbols(max_iv_rank=20, min_days_to_ex_div=3, min_liquidity=3, sort_by=iv_r
 → Depressed IV names, not near ex-div, sorted cheapest IV first
 ```
 
-### 4.13 `earnings_calendar`
+### 4.14 `earnings_calendar`
 
 Upcoming earnings across all tracked symbols within `days_ahead` days. No symbol required — scans the entire tracked universe. **REST:** `GET /v1/alpha/analytics?metric=earnings_calendar&days_ahead=7`
 
@@ -1213,7 +1248,7 @@ Upcoming earnings across all tracked symbols within `days_ahead` days. No symbol
 
 Returns only symbols present in AlphaDB's earnings calendar (tracked symbols with earnings data synced). `timing` values: `AMC`, `BMO`, `TNS`, or `null`. `eps_estimate` is included when available.
 
-### 4.14 `put_call_ratio`
+### 4.15 `put_call_ratio`
 
 Put/call volume ratio for near-term options (0-45 DTE). Measures market sentiment by comparing how much put volume vs. call volume is trading. Live data from Polygon options snapshot — most meaningful during market hours. Accepts comma-separated symbols for batch mode (up to 50). **REST:** `GET /v1/alpha/analytics?metric=put_call_ratio&symbol=SPY`
 

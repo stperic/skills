@@ -631,6 +631,7 @@ All responses include:
 | `unusual_volume` | Relative volume (RVOL) for unusual activity detection | `symbol` or `symbols` | `threshold`, `min_dollar_volume` |
 | `beta` | Stock beta relative to S&P 500 (SPY) — systematic risk measure | `symbol` or `symbols` | `days` (20-252, default 252), `as_of` |
 | `correlation` | Pairwise correlation matrix between symbols (-1 to 1) | `symbols` | `days` (10-252, default 30) |
+| `mean_reversion` | Per-symbol AR(1) half-life, ADF p-value, z-score on log(close) at `as_of` | `symbols` (max 1000) | `as_of`, `window` (100-504, default 120) |
 | `earnings_calendar` | Upcoming earnings across all tracked symbols | — (none) | `days_ahead` (1-90, default 7) |
 | `put_call_ratio` | Put/call volume ratio for near-term options (0-45 DTE). Live Polygon data. | `symbol` or `symbols` | — |
 
@@ -1028,6 +1029,61 @@ curl "http://localhost:8080/v1/alpha/analytics?metric=correlation&symbols=AAPL,M
 ```
 
 Accepts 2-20 comma-separated symbols. Optional `?days=` for lookback (range: 10-252, default: 30). Values near +1 = move together; near -1 = move opposite; near 0 = uncorrelated.
+
+### Mean Reversion (batch)
+
+```bash
+curl "http://localhost:8080/v1/alpha/analytics?metric=mean_reversion&symbols=AAPL,MSFT,SPY&window=120&as_of=2026-02-14"
+```
+
+```json
+{
+  "data": {
+    "AAPL": {
+      "half_life_days": 8.34,
+      "adf_p_value": 0.018,
+      "z_score": -1.42,
+      "fit_n_obs": 120,
+      "data_quality": "ok"
+    },
+    "MSFT": {
+      "half_life_days": null,
+      "adf_p_value": 0.51,
+      "z_score": -0.18,
+      "fit_n_obs": 120,
+      "data_quality": "non_mean_reverting"
+    },
+    "SPY": {
+      "half_life_days": null,
+      "adf_p_value": null,
+      "z_score": null,
+      "fit_n_obs": 47,
+      "data_quality": "insufficient_data"
+    }
+  },
+  "as_of": "2026-02-14",
+  "window_days": 120,
+  "count": 3
+}
+```
+
+Computes three stats per symbol on the `log(close)` series over the last `window` daily bars ending at `as_of`:
+
+- `half_life_days` — AR(1) mean-reversion half-life. Regression of `Δy_t` on `y_{t-1}` (constant included); half-life = `-ln(2)/ln(1+β)`. `null` when `β ≥ 0` (series drifts).
+- `adf_p_value` — Augmented Dickey-Fuller p-value, constant-only model ("c" in statsmodels parlance), AIC-selected augmentation lag over `[0, schwert_max]` where `schwert_max = floor(12·(N/100)^0.25)`. P-values interpolated from the MacKinnon (1996) asymptotic τ_c distribution; left tail uses log-p interpolation. Reject the unit-root null at small p.
+- `z_score` — `(log_p_T − mean(log_p[window])) / std(log_p[window])`, population denominator. Captures current deviation from window mean.
+- `fit_n_obs` — bars actually used in the fit after PIT clipping. Always ≥ 100 (`stats.MinObs`) for the stats fields to be non-null.
+- `data_quality` — `ok` | `insufficient_data` (fit_n_obs < 100, or any bar has close ≤ 0) | `non_mean_reverting` (AR(1) β ≥ 0).
+
+**Typical stationary-trade gate:** `half_life_days ∈ [1, 30] AND adf_p_value < 0.01 AND |z_score| ≥ 2.0`.
+
+**PIT semantics.** Any bar with `bar_date > as_of` is dropped before fitting; if `as_of` falls mid-day, the bar stamped that day is included (whole-day boundary). The query window is wider than `window` trading days to absorb weekends and holidays — the service then takes the last `window` valid bars.
+
+**Determinism contract.** Two calls with the same `(symbols, as_of, window)` return bit-identical JSON bytes. Response symbols are sorted alphabetically before serialization; per-symbol stats are pure functions of the (deterministically ordered) bar slice. No goroutines escape the service, no map iteration leaks into the math.
+
+**Limits.** Up to 1000 symbols per request. `window` clamped to `[100, 504]`. Concurrency is service-internal (semaphore-bounded fan-out across symbols). Production-measured: 570 symbols × 120-day window completes in ~400ms against the LXC.
+
+**Architectural note.** Mean-reversion stats are computed insights, not raw market data — same category as `iv_metrics` and `beta`. Clients consume; they don't reimplement. See `architecture.md` "AlphaDB owns analytics, clients consume" for the full principle and rationale.
 
 ### Earnings Calendar
 
