@@ -303,10 +303,10 @@ curl "http://localhost:8080/v1/quotes?symbols=SPY,AAPL"
 ### Options Chain
 
 ```
-GET /v1/options/chain?underlying={SYMBOL}&expiry={YYYY-MM-DD}&type={call|put|all}&min_strike={N}&max_strike={N}&as_of={TIMESTAMP}
+GET /v1/options/chain?underlying={SYMBOL}&expiry={YYYY-MM-DD}&type={call|put|all}&min_strike={N}&max_strike={N}&strike_count={N}&as_of={TIMESTAMP}
 ```
 
-Optional `as_of` (RFC3339 or YYYY-MM-DD) for point-in-time historical chain from DB.
+Optional `as_of` (RFC3339 or YYYY-MM-DD) for point-in-time historical chain from DB. Optional `strike_count` (default 50, max 1000) caps the number of strikes returned by the live provider.
 
 ```bash
 curl "http://localhost:8080/v1/options/chain?underlying=SPY&expiry=2026-03-20&type=put"
@@ -328,7 +328,18 @@ curl "http://localhost:8080/v1/options/chain?underlying=SPY&expiry=2026-03-20&ty
 }
 ```
 
-Up to 13 normalized fields per contract: `strike`, `expiry`, `type`, `bid`, `ask`, `last`, `volume`, `oi`, `iv`, `delta`, `gamma`, `theta`, `vega`. Greeks are from provider-supplied values (Polygon, Schwab). tastytrade chain responses have `delta`/`gamma`/`theta`/`vega` as `null` — tastytrade does not supply Greeks via REST. **Historical responses** (via `as_of`) omit fields with no data: `bid`, `ask`, and `oi` are absent for bars from Polygon flat files (OHLCV only); Greeks fields are absent when IV could not be solved.
+Up to 13 normalized fields per contract: `strike`, `expiry`, `type`, `bid`, `ask`, `last`, `volume`, `oi`, `iv`, `delta`, `gamma`, `theta`, `vega`. Greeks are from provider-supplied values (Polygon, Schwab). tastytrade chain responses have `delta`/`gamma`/`theta`/`vega` as `null` — tastytrade does not supply Greeks via REST. **IV is decimal at the wire across all providers and the DB-backed branch** (e.g. `0.18` means 18%). **Historical responses** (via `as_of`) omit fields with no data: `bid`, `ask`, and `oi` are absent for bars from Polygon flat files (OHLCV only); Greeks fields are absent when IV could not be solved.
+
+**`strike_count` and tail coverage.** Default `strike_count=50` returns Schwab's 50-strike window centered around ATM — the right default for "show me the active chain." Screener workloads scanning the deep-OTM tail (0.01δ catastrophe wings, far-OOM short-DTE strikes) must pass `strike_count` explicitly:
+
+| Use case | Call |
+|---|---|
+| ATM-centered chain (default) | omit `strike_count` |
+| Deep-OTM tail scan | `strike_count=500` |
+| Full chain (liquid + illiquid) | `strike_count=1000` |
+| Narrow band around a target strike | `min_strike=X&max_strike=Y` (`strike_count` still applies) |
+
+Out-of-range values (`<1`, `>1000`, non-integer) return `400 BAD_REQUEST` without calling the upstream provider. The DB-backed (`as_of`) branch is not capped — it always returns the full stored chain — so `strike_count` only affects the live path. Providers map the param to their native field: Schwab → `strikeCount`, Polygon → `limit`. tastytrade returns the nested full chain regardless.
 
 ### Options Expirations
 

@@ -59,7 +59,7 @@ On error:
 | Tool | Cap | Action |
 |------|-----|--------|
 | `bars` | 5000 rows | Increase `limit` or narrow `start`/`end` date range |
-| `options_chain` | 200 contracts | Add `expiry` + `min_strike`/`max_strike` to narrow to ATM range |
+| `options_chain` | `strike_count` (default 50, max 1000) | Default is Schwab's 50-strike ATM window. Tail scans pass `strike_count=500`; full chain `strike_count=1000`. `min_strike`/`max_strike` filter the returned set further. |
 
 **Data freshness metadata:** Analytics and composite tools include metadata so agents can reason about data recency:
 
@@ -100,7 +100,7 @@ Never skip fields silently. Always return the field as `null` so the agent's par
 
 **Data routing:** Data source is determined automatically. Without `as_of`, data comes live from the upstream provider (Schwab, Alpha Vantage, tastytrade, FRED). With `as_of`, data comes from the local database. In as-of replay mode, `as_of` is required on all date-aware endpoints — all data comes from the database.
 
-**Size limits:** Cap large responses (bars: 5000 rows max, default 100; options_chain: 200 contracts). Set `"truncated": true` when capped. Always pass `limit` explicitly for bars — the default (100) may not match your analysis horizon.
+**Size limits:** Cap large responses (bars: 5000 rows max, default 100; options_chain: caller-controlled via `strike_count`, default 50, max 1000). Set `"truncated": true` when capped. Always pass `limit` explicitly for bars and `strike_count` for chain tail scans — the default chain window is the 50 strikes centered around ATM (Schwab convention) and won't surface deep-OTM wings or far-OOM short-DTE strikes.
 
 ---
 
@@ -165,7 +165,7 @@ When `as_of` is set, returns the latest bar snapshot at or before the specified 
 
 ### 1.3 `options_chain`
 
-Options contracts with Greeks, bid/ask, volume, and open interest. **REST:** `GET /v1/options/chain?underlying=SPY&expiry=2026-03-20&type=put&min_strike=510&max_strike=530`
+Options contracts with Greeks, bid/ask, volume, and open interest. **REST:** `GET /v1/options/chain?underlying=SPY&expiry=2026-03-20&type=put&min_strike=510&max_strike=530&strike_count=500`
 
 | Param | Type | Required | Default |
 |-------|------|----------|---------|
@@ -174,6 +174,7 @@ Options contracts with Greeks, bid/ask, volume, and open interest. **REST:** `GE
 | `type` | string | no | `all` |
 | `min_strike` | number | no | — set to ~price × 0.85 |
 | `max_strike` | number | no | — set to ~price × 1.15 |
+| `strike_count` | integer | no | **50** — Schwab's ATM-centered window. Pass `500` for tail scans, `1000` for full chain. Range 1-1000. |
 | `as_of` | string | no | — Point-in-time snapshot from local DB. Returns latest option data at or before timestamp. Requires tracked underlying. |
 
 **Returns:**
@@ -190,7 +191,17 @@ Options contracts with Greeks, bid/ask, volume, and open interest. **REST:** `GE
 }
 ```
 
-Each contract contains up to 13 fields: `strike`, `expiry`, `type`, `bid`, `ask`, `last`, `volume`, `oi`, `iv`, `delta`, `gamma`, `theta`, `vega`. Raw Polygon nested structures are stripped. Greeks are null for tastytrade (not available via REST). **Historical (`as_of`) responses omit fields with no data** — `bid`, `ask`, and `oi` are absent for bars sourced from Polygon flat files (OHLCV only); Greeks fields are absent when the IV solver could not converge. Live responses always include all 13 fields. Hard cap: **200 contracts**. `truncated: true` signals the cap was hit — add `expiry` and narrow `min_strike`/`max_strike`. Without filters, SPY and AAPL typically return 200 contracts and truncate.
+Each contract contains up to 13 fields: `strike`, `expiry`, `type`, `bid`, `ask`, `last`, `volume`, `oi`, `iv`, `delta`, `gamma`, `theta`, `vega`. Raw Polygon nested structures are stripped. Greeks are null for tastytrade (not available via REST). **IV is decimal at the wire** across all providers (`0.18` = 18%) — matches the DB-backed branch and the rest of the AlphaDB convention. **Historical (`as_of`) responses omit fields with no data** — `bid`, `ask`, and `oi` are absent for bars sourced from Polygon flat files (OHLCV only); Greeks fields are absent when the IV solver could not converge. Live responses always include all 13 fields.
+
+**Strike-count behavior.** Default `strike_count=50` is Schwab's "show me a chain" window centered around ATM and is the right shape for entry/exit pricing on the active liquid band. Screener workloads must request a wider window explicitly:
+
+| Use case | `strike_count` |
+|---|---|
+| ATM-centered entry/exit pricing | omit (default 50) |
+| Deep-OTM tail scan (0.01δ wings, far-OOM puts at short DTE) | `500` |
+| Full chain (liquid + illiquid, every listed strike) | `1000` |
+
+The DB-backed `as_of` branch is never capped — it returns the full stored chain regardless of `strike_count` (the param applies to the live provider only). `min_strike`/`max_strike` filter the returned set further. Out-of-range or non-integer `strike_count` returns `400 BAD_REQUEST` without calling the upstream provider.
 
 ### 1.4 `options_expirations`
 
